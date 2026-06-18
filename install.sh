@@ -41,6 +41,8 @@ PRESET_SERVER=""; PRESET_CLIENT=""; PRESET_COMPONENTS=""; PRESET_BUILD=""
 SEL_RUNE=0; SEL_WORLD=0; SEL_MAGE=0
 SUDO=""; PKG_INSTALL=""; PKG_REFRESH=":"; PKG_REFRESHED=0
 PATCH_PY=""
+DOCKER_COMPOSE=""        # "docker compose" or "docker-compose" once detected
+DID_BUILD=0              # set when the Docker auto-rebuild actually ran
 
 # ── output helpers ───────────────────────────────────────────────────────────
 if [ -t 1 ]; then
@@ -216,7 +218,7 @@ ensure_pip() { # ensure_pip <python>
 
 # build_patch <module-dir> <tool-relpath> <label>
 build_patch() {
-    local moddir="$1" tool="$2" label="$3" script="$1/$2"
+    local tool="$2" label="$3" script="$1/$2"
     [ -f "$script" ] || { warn "$label: $tool not found — skipping."; return 0; }
     local client_arg="$CLIENT" script_arg="$script"
     if is_wsl && [ "$PATCH_PY" = "python.exe" ]; then
@@ -307,17 +309,80 @@ print_rebuild_cmd() {
     fi
 }
 
+# ── docker auto-build (opt-in) ───────────────────────────────────────────────
+detect_compose() {
+    DOCKER_COMPOSE=""
+    command -v docker >/dev/null 2>&1 || return 1
+    if   docker compose version >/dev/null 2>&1; then DOCKER_COMPOSE="docker compose"
+    elif command -v docker-compose >/dev/null 2>&1; then DOCKER_COMPOSE="docker-compose"
+    else return 1; fi
+    return 0
+}
+
+# dc <args…>: run a compose subcommand from the server root (so docker-compose.yml
+# and docker-compose.override.yml are both picked up), honoring --dry-run.
+dc() { run sh -c "cd \"$SERVER\" && $DOCKER_COMPOSE $*"; }
+
+# offer_docker_build: opt-in rebuild + restart of the worldserver. Stops the
+# running stack, recompiles the image with the freshly-cloned modules, brings it
+# back up, then follows the worldserver log so the user can watch it come online.
+# No-op unless the build method is Docker and we have an interactive terminal.
+offer_docker_build() {
+    [ "$BUILD_METHOD" = "docker" ] || return 0
+    [ -t 0 ] || return 0
+    if ! detect_compose; then
+        warn "Docker / compose not found — skipping the auto-rebuild offer."
+        return 0
+    fi
+    echo
+    warn "This restarts your server: the running containers are stopped, the"
+    warn "worldserver is recompiled with the new modules, then brought back up."
+    ask_yn "Rebuild and restart the worldserver in Docker now?" N || return 0
+
+    if [ "$DRY_RUN" -ne 1 ] && ! docker info >/dev/null 2>&1; then
+        warn "Can't reach the Docker daemon (is it running? are you in the 'docker' group?)."
+        warn "Skipping the auto-rebuild — run it yourself when ready:"
+        print_rebuild_cmd
+        return 0
+    fi
+
+    log "Stopping containers ($DOCKER_COMPOSE down)…"
+    dc down
+    log "Recompiling the worldserver image ($DOCKER_COMPOSE build) — output streams below…"
+    if ! dc build; then
+        warn "Build failed; containers are left stopped. Fix the error and re-run:"
+        print_rebuild_cmd
+        return 1
+    fi
+    log "Starting containers ($DOCKER_COMPOSE up -d)…"
+    dc up -d
+    DID_BUILD=1
+    ok "Containers are up. Following the worldserver log — Ctrl-C to stop watching"
+    echo "   (the server keeps running after you detach)."
+    if [ "$DRY_RUN" -eq 1 ]; then
+        printf '   dry: cd "%s" && %s logs -f ac-worldserver\n' "$SERVER" "$DOCKER_COMPOSE"
+        return 0
+    fi
+    sh -c "cd \"$SERVER\" && $DOCKER_COMPOSE logs -f ac-worldserver" || true
+}
+
 # ── next steps ───────────────────────────────────────────────────────────────
 print_next_steps() {
     echo
     ok "Done."
     echo
     if [ "$BUILD_METHOD" = "docker" ]; then
-        echo "Next steps (you rebuild the worldserver image):"
-        echo "  1. Recompile the worldserver with the new modules and recreate the containers:"
-        print_rebuild_cmd
-        echo "     Each module defaults to ENABLED in code, so they run with no config editing."
-        echo "  2. Module SQL auto-applies on container start (the acore DB auto-updater)."
+        if [ "$DID_BUILD" -eq 1 ]; then
+            echo "Next steps:"
+            echo "  1. Worldserver was rebuilt and restarted above — modules are live."
+            echo "     (Each module defaults to ENABLED in code; SQL auto-applied on container start.)"
+        else
+            echo "Next steps (you rebuild the worldserver image):"
+            echo "  1. Recompile the worldserver with the new modules and recreate the containers:"
+            print_rebuild_cmd
+            echo "     Each module defaults to ENABLED in code, so they run with no config editing."
+            echo "  2. Module SQL auto-applies on container start (the acore DB auto-updater)."
+        fi
     else
         echo "Next steps (you build the worldserver):"
         echo "  1. Build AzerothCore with the modules statically linked:"
@@ -449,6 +514,7 @@ do_install() {
     [ "$SEL_MAGE"  -eq 1 ] && clone_or_update mod-sod-mage       "$SERVER/modules/mod-sod-mage"
     build_patches
     [ "$SEL_RUNE" -eq 1 ] && install_addon
+    offer_docker_build
     print_next_steps
 }
 
@@ -470,12 +536,19 @@ do_update() {
         local ad; ad="$(addons_dir)"
         [ -d "$ad/RuneEngraver/.git" ] && clone_or_update "$ADDON_REPO" "$ad/RuneEngraver"
     fi
-    echo; ok "Update complete. Rebuild your worldserver to pick up module changes:"
-    print_rebuild_cmd
+    offer_docker_build
+    if [ "$DID_BUILD" -eq 1 ]; then
+        echo; ok "Update complete — worldserver rebuilt and restarted."
+    else
+        echo; ok "Update complete. Rebuild your worldserver to pick up module changes:"
+        print_rebuild_cmd
+    fi
 }
 
 usage() {
-    sed -n '2,30p' "$0" | sed 's/^#\{0,1\} \{0,1\}//'
+    # print the header comment block (lines after the shebang, up to the first
+    # non-comment line) with the leading "# " stripped
+    awk 'NR>1 { if ($0 ~ /^#/) { sub(/^# ?/, ""); print } else exit }' "$0"
     exit 0
 }
 
