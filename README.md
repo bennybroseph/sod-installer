@@ -12,7 +12,7 @@ worldserver as usual. Works on **native Linux** and **WSL**.
 ```bash
 # clone and run
 git clone https://github.com/bennybroseph/sod-installer.git
-cd sod-installer && ./install.sh
+cd sod-installer && bash install.sh        # (or ./install.sh if it's executable)
 
 # …or one-liner
 curl -sSL https://raw.githubusercontent.com/bennybroseph/sod-installer/main/install.sh | bash
