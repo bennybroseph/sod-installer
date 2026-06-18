@@ -18,6 +18,7 @@
 #     ./install.sh --dry-run       print every action without doing anything
 #     ./install.sh --all --server DIR --client DIR    non-interactive (CI)
 #     ./install.sh --components rune,world,mage        choose components non-interactively
+#     ./install.sh --docker | --source                set build method (else asked once)
 #
 # Non-destructive: only ever `git clone` (missing) or `git pull --ff-only`
 # (existing); never reset/clean/force/delete.
@@ -35,7 +36,8 @@ CONFIG_FILE="$CONFIG_DIR/config"
 DRY_RUN=0
 ACTION="install"
 SERVER=""; CLIENT=""
-PRESET_SERVER=""; PRESET_CLIENT=""; PRESET_COMPONENTS=""
+BUILD_METHOD=""          # "source" (cmake) or "docker"; remembered in config
+PRESET_SERVER=""; PRESET_CLIENT=""; PRESET_COMPONENTS=""; PRESET_BUILD=""
 SEL_RUNE=0; SEL_WORLD=0; SEL_MAGE=0
 SUDO=""; PKG_INSTALL=""; PKG_REFRESH=":"; PKG_REFRESHED=0
 PATCH_PY=""
@@ -262,6 +264,7 @@ save_config() {
     run mkdir -p "$CONFIG_DIR"
     [ "$DRY_RUN" -eq 1 ] && { printf '   dry: write %s\n' "$CONFIG_FILE"; return 0; }
     { printf 'server=%s\n' "$SERVER"; printf 'client=%s\n' "$CLIENT"
+      printf 'build=%s\n' "$BUILD_METHOD"
       printf 'rune=%s\n' "$SEL_RUNE"; printf 'world=%s\n' "$SEL_WORLD"; printf 'mage=%s\n' "$SEL_MAGE"
     } > "$CONFIG_FILE"
 }
@@ -271,11 +274,37 @@ load_config() {
     local k v
     while IFS='=' read -r k v; do
         case "$k" in
-            server) SERVER="$v" ;; client) CLIENT="$v" ;;
+            server) SERVER="$v" ;; client) CLIENT="$v" ;; build) BUILD_METHOD="$v" ;;
             rune) SEL_RUNE="$v" ;; world) SEL_WORLD="$v" ;; mage) SEL_MAGE="$v" ;;
         esac
     done < "$CONFIG_FILE"
     return 0
+}
+
+# ── build method ─────────────────────────────────────────────────────────────
+# A Docker install and a native cmake build use the same source tree (the
+# AzerothCore checkout always ships docker-compose.yml), so we can't infer intent
+# from files — ask once and remember it. --docker/--source skip the prompt.
+resolve_build_method() {
+    [ -n "$PRESET_BUILD" ] && BUILD_METHOD="$PRESET_BUILD"
+    [ -n "$BUILD_METHOD" ] && return 0          # from flag or saved config
+    if [ ! -t 0 ]; then BUILD_METHOD="source"; return 0; fi
+    echo
+    echo "How do you build and run your server?"
+    echo "  1) Source build   (cmake + make)        [default]"
+    echo "  2) Docker         (docker compose)"
+    local c; read -r -p "Choice [1]: " c || true; c="${c:-1}"
+    [ "$c" = "2" ] && BUILD_METHOD="docker" || BUILD_METHOD="source"
+}
+
+# print_rebuild_cmd: the one command line that recompiles the worldserver with
+# the freshly-cloned modules, for whichever build method is in effect.
+print_rebuild_cmd() {
+    if [ "$BUILD_METHOD" = "docker" ]; then
+        echo "       cd \"$SERVER\" && docker compose build && docker compose up -d"
+    else
+        echo "       cd <build> && cmake .. -DMODULES=static && make -j\$(nproc) && make install"
+    fi
 }
 
 # ── next steps ───────────────────────────────────────────────────────────────
@@ -283,17 +312,27 @@ print_next_steps() {
     echo
     ok "Done."
     echo
-    echo "Next steps (you build the worldserver):"
-    echo "  1. Build AzerothCore with the modules statically linked:"
-    echo "       cd <build> && cmake .. -DMODULES=static && make -j\$(nproc) && make install"
-    echo "     The build installs each module's <name>.conf.dist to etc/modules/, and every"
-    echo "     module defaults to ENABLED in code — so they run with no config editing."
-    echo "  2. Module SQL auto-applies on first start (DB auto-updater), or apply"
-    echo "     modules/*/data/sql/db-world/base/*.sql to acore_world manually."
+    if [ "$BUILD_METHOD" = "docker" ]; then
+        echo "Next steps (you rebuild the worldserver image):"
+        echo "  1. Recompile the worldserver with the new modules and recreate the containers:"
+        print_rebuild_cmd
+        echo "     Each module defaults to ENABLED in code, so they run with no config editing."
+        echo "  2. Module SQL auto-applies on container start (the acore DB auto-updater)."
+    else
+        echo "Next steps (you build the worldserver):"
+        echo "  1. Build AzerothCore with the modules statically linked:"
+        print_rebuild_cmd
+        echo "     The build installs each module's <name>.conf.dist to etc/modules/, and every"
+        echo "     module defaults to ENABLED in code — so they run with no config editing."
+        echo "  2. Module SQL auto-applies on first start (DB auto-updater), or apply"
+        echo "     modules/*/data/sql/db-world/base/*.sql to acore_world manually."
+    fi
     [ "$SEL_RUNE" -eq 1 ] && echo "  3. In-game: open the Rune Engraver panel from the character sheet (top-right)."
-    echo
-    echo "  Optional — to tweak a setting, materialize editable .conf copies after building:"
-    echo "       for f in etc/modules/*.conf.dist; do cp -n \"\$f\" \"\${f%.dist}\"; done"
+    if [ "$BUILD_METHOD" != "docker" ]; then
+        echo
+        echo "  Optional — to tweak a setting, materialize editable .conf copies after building:"
+        echo "       for f in etc/modules/*.conf.dist; do cp -n \"\$f\" \"\${f%.dist}\"; done"
+    fi
     echo
     echo "  Re-run with --update any time to pull the latest and rebuild the patches."
 }
@@ -403,6 +442,7 @@ startup() {
 # ── flows ────────────────────────────────────────────────────────────────────
 do_install() {
     choose_components
+    resolve_build_method
     save_config
     [ "$SEL_RUNE"  -eq 1 ] && clone_or_update mod-rune-engraving "$SERVER/modules/mod-rune-engraving"
     [ "$SEL_WORLD" -eq 1 ] && clone_or_update mod-sod-world      "$SERVER/modules/mod-sod-world"
@@ -419,6 +459,7 @@ do_update() {
     [ -d "$SERVER/modules/mod-sod-world/.git" ]      && SEL_WORLD=1
     [ -d "$SERVER/modules/mod-sod-mage/.git" ]       && SEL_MAGE=1
     [ $((SEL_RUNE + SEL_WORLD + SEL_MAGE)) -gt 0 ] || die "No installed modules found under $SERVER/modules — run an install first."
+    [ -n "$PRESET_BUILD" ] && BUILD_METHOD="$PRESET_BUILD"   # honor a flag; else keep saved value
     save_config
     log "Updating installed components…"
     [ "$SEL_RUNE"  -eq 1 ] && clone_or_update mod-rune-engraving "$SERVER/modules/mod-rune-engraving"
@@ -429,7 +470,8 @@ do_update() {
         local ad; ad="$(addons_dir)"
         [ -d "$ad/RuneEngraver/.git" ] && clone_or_update "$ADDON_REPO" "$ad/RuneEngraver"
     fi
-    echo; ok "Update complete. Rebuild your worldserver to pick up module changes."
+    echo; ok "Update complete. Rebuild your worldserver to pick up module changes:"
+    print_rebuild_cmd
 }
 
 usage() {
@@ -444,6 +486,8 @@ while [ $# -gt 0 ]; do
         --install)    ACTION="install" ;;
         --update)     ACTION="update" ;;
         --all)        PRESET_COMPONENTS="all" ;;
+        --docker)     PRESET_BUILD="docker" ;;
+        --source|--cmake) PRESET_BUILD="source" ;;
         --components) PRESET_COMPONENTS="${2:-}"; shift ;;
         --components=*) PRESET_COMPONENTS="${1#*=}" ;;
         --server)     PRESET_SERVER="${2:-}"; shift ;;
