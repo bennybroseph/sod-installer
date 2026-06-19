@@ -41,10 +41,11 @@ shown as `Installed` (green), `Update Available` (blue), `Not Installed` (gray),
 
 1. Auto-installs missing prerequisites (`git`, and `python3` + `pympq` if a patch
    needs building; `zenity` for the picker on Linux).
-2. Clones the selected modules into `<server>/modules/`.
-3. Builds the needed client patches — item patches (letter `y`) and spell patches
-   (letter `z`) — written to both `<client>/Data/<locale>/` (e.g. `patch-enus-y.mpq`)
-   and `<client>/Data/` (e.g. `patch-y.mpq`). **Close WoW first** — it locks those files.
+2. Clones the selected modules into `<server>/modules/`, plus the
+   [`sod-client`](https://github.com/mod-sod/sod-client) patch pipeline.
+3. Builds the **one** consolidated client patch (letter `z`, items + spells from all
+   modules), written to both `<client>/Data/<locale>/` (e.g. `patch-enus-z.mpq`) and
+   `<client>/Data/` (`patch-z.mpq`). **Close WoW first** — it locks those files.
 4. Clones the RuneEngraver addon into `<client>/Interface/AddOns/`.
 5. Prints your next steps. **You build the worldserver** (`-DMODULES=static`).
 

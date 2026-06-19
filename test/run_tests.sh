@@ -115,7 +115,7 @@ t_resolve_remove_deps() {
     mkrepo "$d/modules/mod-sod-mage"
     SEL_WORLD=1; SEL_MAGE=0; local out
     out="$(resolve_remove_deps 2>&1)"
-    assert_contains "$out" "item icons lose" "resolve_remove_deps: removing world warns mage icons"
+    assert_contains "$out" "mage item icons survive" "resolve_remove_deps: removing world warns mage icons"
     rm -rf "$d"
 }
 
@@ -143,14 +143,22 @@ t_remove_repo_real() {
 t_remove_patches() {
     reset_state; local d out; d="$(mktemp -d)"
     CLIENT="$d"; mkdir -p "$d/data/enus"
-    : > "$d/data/enus/patch-enus-y.mpq"; : > "$d/data/enus/patch-enus-z.mpq"
-    : > "$d/data/patch-y.mpq";           : > "$d/data/patch-z.mpq"
+    : > "$d/data/enus/patch-enus-z.mpq"; : > "$d/data/patch-z.mpq"   # consolidated
+    : > "$d/data/enus/patch-enus-y.mpq"; : > "$d/data/patch-y.mpq"   # legacy split
+    # One consolidated patch ('z') now; selecting any client-data module targets it,
+    # plus the retired 'y' is cleaned up.
     SEL_WORLD=1; SEL_MAGE=0
     out="$(remove_patches 2>&1)"
-    assert_contains     "$out" "patch-enus-y"      "remove_patches: world locale patch targeted"
-    assert_contains     "$out" "$d/data/patch-y"   "remove_patches: world base patch targeted"
-    assert_not_contains "$out" "patch-enus-z"      "remove_patches: mage locale patch untouched"
-    assert_not_contains "$out" "$d/data/patch-z"   "remove_patches: mage base patch untouched"
+    assert_contains "$out" "patch-enus-z"     "remove_patches: consolidated locale patch targeted"
+    assert_contains "$out" "$d/data/patch-z"  "remove_patches: consolidated base patch targeted"
+    assert_contains "$out" "patch-enus-y"     "remove_patches: legacy locale patch cleaned"
+    assert_contains "$out" "$d/data/patch-y"  "remove_patches: legacy base patch cleaned"
+
+    # No client-data module selected -> no-op.
+    reset_state; CLIENT="$d"; SEL_WORLD=0; SEL_MAGE=0
+    : > "$d/data/patch-z.mpq"
+    remove_patches >/dev/null 2>&1
+    assert_present "$d/data/patch-z.mpq" "remove_patches: no-op when no client module selected"
     rm -rf "$d"
 }
 
@@ -240,10 +248,10 @@ t_do_uninstall_real() {
     assert_absent "$srv/modules/mod-sod-world"             "do_uninstall: world repo removed"
     assert_absent "$srv/modules/mod-sod-mage"              "do_uninstall: mage repo removed"
     assert_absent "$cli/Interface/AddOns/RuneEngraver"     "do_uninstall: addon removed"
-    assert_absent "$cli/data/enus/patch-enus-y.mpq"        "do_uninstall: world locale patch removed"
-    assert_absent "$cli/data/enus/patch-enus-z.mpq"        "do_uninstall: mage locale patch removed"
-    assert_absent "$cli/data/patch-y.mpq"                  "do_uninstall: world base patch removed"
-    assert_absent "$cli/data/patch-z.mpq"                  "do_uninstall: mage base patch removed"
+    assert_absent "$cli/data/enus/patch-enus-z.mpq"        "do_uninstall: consolidated locale patch removed"
+    assert_absent "$cli/data/patch-z.mpq"                  "do_uninstall: consolidated base patch removed"
+    assert_absent "$cli/data/enus/patch-enus-y.mpq"        "do_uninstall: legacy locale patch cleaned"
+    assert_absent "$cli/data/patch-y.mpq"                  "do_uninstall: legacy base patch cleaned"
     assert_absent "$CONFIG_FILE"                           "do_uninstall: config removed (full clean)"
     rm -rf "$srv" "$cli"
 }

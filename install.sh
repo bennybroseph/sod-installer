@@ -227,30 +227,36 @@ ensure_pip() { # ensure_pip <python>
     "$1" -m ensurepip --user >/dev/null 2>&1 || true
 }
 
-# build_patch <module-dir> <tool-relpath> <label>
-build_patch() {
-    local tool="$2" label="$3" script="$1/$2"
-    [ -f "$script" ] || { warn "$label: $tool not found — skipping."; return 0; }
-    local client_arg="$CLIENT" script_arg="$script"
+# build_client_patch <sod-client-dir>: run the one consolidator that builds the
+# single patch from every installed module's data (items + spells).
+build_client_patch() {
+    local sc="$1" script="$sc/build_patch.py"
+    [ -f "$script" ] || { warn "sod-client: build_patch.py not found — skipping."; return 0; }
+    local server_arg="$SERVER" client_arg="$CLIENT" script_arg="$script"
     if is_wsl && [ "$PATCH_PY" = "python.exe" ]; then
-        client_arg="$(wslpath -w "$CLIENT")"; script_arg="$(wslpath -w "$script")"
+        server_arg="$(wslpath -w "$SERVER")"
+        client_arg="$(wslpath -w "$CLIENT")"
+        script_arg="$(wslpath -w "$script")"
     fi
-    log "Building $label client patch…"
-    run "$PATCH_PY" "$script_arg" --client "$client_arg" || warn "$label: patch build failed."
+    log "Building consolidated SoD client patch…"
+    run "$PATCH_PY" "$script_arg" --server "$server_arg" --client "$client_arg" \
+        || warn "client patch build failed."
 }
 
 print_manual_patch_cmds() {
-    warn "Build the client patch(es) yourself once pympq/StormLib is available:"
-    [ "$SEL_WORLD" -eq 1 ] && printf '     python %s/modules/mod-sod-world/tools/build_sod_world_patch.py --client "%s"\n' "$SERVER" "$CLIENT"
-    [ "$SEL_MAGE"  -eq 1 ] && printf '     python %s/modules/mod-sod-mage/tools/build_sod_mage_patch.py  --client "%s"\n' "$SERVER" "$CLIENT"
+    warn "Build the client patch yourself once pympq/StormLib is available:"
+    printf '     python %s/sod-client/build_patch.py --server "%s" --client "%s"\n' "$SERVER" "$SERVER" "$CLIENT"
 }
 
+# build_patches: clone the sod-client pipeline and run it once. It consolidates
+# every installed module's items + spells into the single client patch.
 build_patches() {
     [ "$SEL_WORLD" -eq 1 ] || [ "$SEL_MAGE" -eq 1 ] || return 0
+    local sc="$SERVER/sod-client"
+    clone_or_update sod-client "$sc"
     if ensure_patch_python; then
         warn "Close the WoW client first — it locks the MPQ files while running."
-        [ "$SEL_WORLD" -eq 1 ] && build_patch "$SERVER/modules/mod-sod-world" "tools/build_sod_world_patch.py" "SoD World (item icons)"
-        [ "$SEL_MAGE"  -eq 1 ] && build_patch "$SERVER/modules/mod-sod-mage"  "tools/build_sod_mage_patch.py"  "SoD Mage (spells)"
+        build_client_patch "$sc"
     else
         warn "No Python with pympq available — skipping the MPQ patch build."
         print_manual_patch_cmds
@@ -272,9 +278,9 @@ install_addon() {
     clone_or_update "$ADDON_REPO" "$ad/RuneEngraver"
 }
 
-# data_dir → the client base data dir where the build scripts write the base-chain
-# patch MPQs (build_sod_*_patch.py write <client>/data/patch-<letter>.mpq). Probe
-# case variants, then fall back to lowercase.
+# data_dir → the client base data dir where the build writes the base-chain patch
+# MPQ (sod-client's build_patch.py writes <client>/data/patch-z.mpq). Probe case
+# variants, then fall back to lowercase.
 data_dir() {
     local d
     for d in "data" "Data"; do
@@ -284,8 +290,8 @@ data_dir() {
 }
 
 # client_locale → the client's locale folder token (the dir under data/ holding the
-# locale-*.mpq archives), e.g. 'enus' or 'deDE'. Matches what build_sod_*_patch.py
-# detect and embed in the locale patch name. Defaults to 'enus' if none is found.
+# locale-*.mpq archives), e.g. 'enus' or 'deDE'. Matches what sod-client's
+# build_patch.py detects and embeds in the locale patch name. Defaults to 'enus'.
 client_locale() {
     local dd d; dd="$(data_dir)"
     for d in "$dd"/*/; do
@@ -620,20 +626,17 @@ remove_addon() {
     remove_repo "$ADDON_REPO addon" "$(addons_dir)/RuneEngraver"
 }
 
-# remove_patches: delete only our own generated MPQ letters; stock client data is
-# never touched. World owns letter 'y' (items), Mage owns letter 'z' (spells). The
-# build scripts write each to BOTH the locale chain (data/enus/patch-enus-<letter>)
-# and the base chain (data/patch-<letter>), so remove both.
+# remove_patches: delete only our own generated MPQ; stock client data is never
+# touched. sod-client writes ONE consolidated patch, letter 'z', to BOTH the locale
+# chain (data/<locale>/patch-<locale>-z) and the base chain (data/patch-z). The
+# retired 'y' from the old per-module split is cleaned up too.
 remove_patches() {
-    local ed dd loc; ed="$(enus_dir)"; dd="$(data_dir)"; loc="$(client_locale)"
-    if [ "$SEL_WORLD" -eq 1 ]; then
-        [ -f "$ed/patch-$loc-y.mpq" ] && { log "Removing item patch → $ed/patch-$loc-y.mpq"; run rm -f "$ed/patch-$loc-y.mpq"; }
-        [ -f "$dd/patch-y.mpq" ]      && { log "Removing item patch → $dd/patch-y.mpq";       run rm -f "$dd/patch-y.mpq"; }
-    fi
-    if [ "$SEL_MAGE" -eq 1 ]; then
-        [ -f "$ed/patch-$loc-z.mpq" ] && { log "Removing spell patch → $ed/patch-$loc-z.mpq"; run rm -f "$ed/patch-$loc-z.mpq"; }
-        [ -f "$dd/patch-z.mpq" ]      && { log "Removing spell patch → $dd/patch-z.mpq";       run rm -f "$dd/patch-z.mpq"; }
-    fi
+    [ "$SEL_WORLD" -eq 1 ] || [ "$SEL_MAGE" -eq 1 ] || return 0
+    local ed dd loc f; ed="$(enus_dir)"; dd="$(data_dir)"; loc="$(client_locale)"
+    for f in "$ed/patch-$loc-z.mpq" "$dd/patch-z.mpq" \
+             "$ed/patch-$loc-y.mpq" "$dd/patch-y.mpq"; do
+        [ -f "$f" ] && { log "Removing client patch → $f"; run rm -f "$f"; }
+    done
 }
 
 # choose what to remove: option 1 = everything installed (default), option 2 =
@@ -676,8 +679,8 @@ resolve_remove_deps() {
     local mage_stays=0
     [ "$SEL_MAGE" -eq 0 ] && [ -d "$SERVER/modules/mod-sod-mage/.git" ] && mage_stays=1
     if [ "$mage_stays" -eq 1 ] && [ "$SEL_WORLD" -eq 1 ]; then
-        warn "Removing SoD World while SoD Mage stays: mage item icons lose their"
-        warn "item patch (letter 'y') and the Mass Regeneration Lich drop is gone."
+        warn "Removing SoD World while SoD Mage stays: rebuild the client patch so"
+        warn "mage item icons survive, and the Mass Regeneration Lich drop is gone."
     fi
     if [ "$mage_stays" -eq 1 ] && [ "$SEL_RUNE" -eq 1 ]; then
         warn "Removing Rune Engraving while SoD Mage stays: the spells still work via"
@@ -703,11 +706,12 @@ do_uninstall() {
     [ "$SEL_RUNE"  -eq 1 ] && echo "  - $SERVER/modules/mod-rune-engraving"
     [ "$SEL_RUNE"  -eq 1 ] && echo "  - $ad/RuneEngraver"
     [ "$SEL_WORLD" -eq 1 ] && echo "  - $SERVER/modules/mod-sod-world"
-    [ "$SEL_WORLD" -eq 1 ] && [ -f "$ed/patch-$loc-y.mpq" ] && echo "  - $ed/patch-$loc-y.mpq"
-    [ "$SEL_WORLD" -eq 1 ] && [ -f "$dd/patch-y.mpq" ]      && echo "  - $dd/patch-y.mpq"
     [ "$SEL_MAGE"  -eq 1 ] && echo "  - $SERVER/modules/mod-sod-mage"
-    [ "$SEL_MAGE"  -eq 1 ] && [ -f "$ed/patch-$loc-z.mpq" ] && echo "  - $ed/patch-$loc-z.mpq"
-    [ "$SEL_MAGE"  -eq 1 ] && [ -f "$dd/patch-z.mpq" ]      && echo "  - $dd/patch-z.mpq"
+    if [ "$SEL_WORLD" -eq 1 ] || [ "$SEL_MAGE" -eq 1 ]; then
+        [ -f "$ed/patch-$loc-z.mpq" ] && echo "  - $ed/patch-$loc-z.mpq"
+        [ -f "$dd/patch-z.mpq" ]      && echo "  - $dd/patch-z.mpq"
+    fi
+    [ "$remove_config" -eq 1 ] && [ -d "$SERVER/sod-client/.git" ] && echo "  - $SERVER/sod-client  (client-patch pipeline)"
     [ "$remove_config" -eq 1 ] && [ -f "$CONFIG_FILE" ] && echo "  - $CONFIG_FILE  (saved installer config)"
     echo
     echo "Your database is NOT touched (see the note below). Repos with local changes"
@@ -722,6 +726,9 @@ do_uninstall() {
     [ "$SEL_WORLD" -eq 1 ] && remove_repo "mod-sod-world" "$SERVER/modules/mod-sod-world"
     [ "$SEL_MAGE"  -eq 1 ] && remove_repo "mod-sod-mage"  "$SERVER/modules/mod-sod-mage"
     remove_patches
+    # The sod-client pipeline is shared; only drop it on a full uninstall (no
+    # client-data module left to rebuild a patch for).
+    [ "$remove_config" -eq 1 ] && remove_repo "sod-client" "$SERVER/sod-client"
 
     if [ "$remove_config" -eq 1 ] && [ -f "$CONFIG_FILE" ]; then
         log "Removing saved config → $CONFIG_FILE"; run rm -f "$CONFIG_FILE"
