@@ -230,13 +230,17 @@ ensure_pip() { # ensure_pip <python>
 # build_client_patch <sod-client-dir>: run the one consolidator that builds the
 # single patch from every installed module's data (items + spells).
 build_client_patch() {
-    local sc="$1" script="$sc/build_patch.py"
+    local sc="$1"
+    local script="$sc/build_patch.py"
     [ -f "$script" ] || { warn "sod-client: build_patch.py not found — skipping."; return 0; }
     local server_arg="$SERVER" client_arg="$CLIENT" script_arg="$script"
     if is_wsl && [ "$PATCH_PY" = "python.exe" ]; then
-        server_arg="$(wslpath -w "$SERVER")"
-        client_arg="$(wslpath -w "$CLIENT")"
-        script_arg="$(wslpath -w "$script")"
+        # Forward-slash UNC (wslpath -m), not backslash (-w): a \\wsl.localhost\...
+        # path can be misread as relative when python.exe is launched from WSL and
+        # get doubled against the CWD. //wsl.localhost/... is handled correctly.
+        server_arg="$(wslpath -m "$SERVER")"
+        client_arg="$(wslpath -m "$CLIENT")"
+        script_arg="$(wslpath -m "$script")"
     fi
     log "Building consolidated SoD client patch…"
     run "$PATCH_PY" "$script_arg" --server "$server_arg" --client "$client_arg" \
