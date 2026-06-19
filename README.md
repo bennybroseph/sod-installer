@@ -1,6 +1,6 @@
 # sod-installer
 
-[![CI](https://github.com/bennybroseph/sod-installer/actions/workflows/ci.yml/badge.svg)](https://github.com/bennybroseph/sod-installer/actions/workflows/ci.yml)
+[![CI](https://github.com/mod-sod/sod-installer/actions/workflows/ci.yml/badge.svg)](https://github.com/mod-sod/sod-installer/actions/workflows/ci.yml)
 
 One-click installer for the **Season of Discovery** AzerothCore content and the
 **RuneEngraver** client addon. It clones the modules into your server, builds the
@@ -11,11 +11,11 @@ worldserver as usual. Works on **native Linux** and **WSL**.
 
 ```bash
 # clone and run
-git clone https://github.com/bennybroseph/sod-installer.git
+git clone https://github.com/mod-sod/sod-installer.git
 cd sod-installer && bash install.sh        # (or ./install.sh if it's executable)
 
 # …or one-liner
-curl -sSL https://raw.githubusercontent.com/bennybroseph/sod-installer/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/mod-sod/sod-installer/main/install.sh | bash
 ```
 
 Running it with no flags opens a menu to choose **Install**, **Update**, or

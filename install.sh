@@ -29,7 +29,7 @@
 set -uo pipefail
 
 # ── configuration ────────────────────────────────────────────────────────────
-GH_BASE="https://github.com/bennybroseph"
+GH_BASE="https://github.com/mod-sod"
 BRANCH="main"
 ADDON_REPO="RuneEngraver"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/sod-installer"
